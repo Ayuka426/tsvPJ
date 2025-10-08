@@ -33,14 +33,14 @@ public class TSVProcessor {
         try {
             validateAsciiPrintable(inputPath);
         } catch (Exception e) {
-            System.err.println("❌ ファイルにASCII印字可能文字以外が含まれています:");
+            System.err.println("エラー: ファイルにASCII印字可能文字以外が含まれています:");
             e.printStackTrace();
 
             return; // チェック失敗なら処理を中止
         }
 
         // 出力ファイル名を自動生成
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmm"));
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss"));
         String outputPath = timestamp + "processed.tsv";
 
         // 入力されたコマンドからモードを判定して処理を実行
@@ -89,7 +89,7 @@ public class TSVProcessor {
                 for (char ch : line.toCharArray()) {
                     if (!(ch == '\t' || (ch >= 0x20 && ch <= 0x7E))) {
                         throw new IllegalArgumentException(
-                            String.format("非ASCII文字を検出しました（行 %d, 文字: '%s', コード: U+%04X）", 
+                            String.format("エラー: 非ASCII文字を検出しました（行 %d, 文字: '%s', コード: U+%04X）", 
                                           lineNum, ch, (int) ch)
                         );
                     }
@@ -106,7 +106,9 @@ public class TSVProcessor {
      * タブ区切りのデータを読み込み、各セル内のコロン区切りを展開し
      * 全ての値の組み合わせを出力
      */
-    public static void normalizeFile(String inputPath, String outputPath) {
+    public static void normalizeFile(String inputPath, String outputPath) throws Exception {
+        File outputFile = new File(outputPath);
+
         try (
             BufferedReader reader = new BufferedReader(new FileReader(inputPath));
             BufferedWriter writer = new BufferedWriter(new FileWriter(outputPath))
@@ -126,6 +128,13 @@ public class TSVProcessor {
                 // 行をセルごとに分割（タブ区切り）
                 String[] cells = line.split("\t", -1);
 
+                // 列数が5を超えていないかチェック
+                if (cells.length > 5) {
+                    throw new IllegalArgumentException(
+                        String.format("エラー: 列数超過 %d行目の列数が%d列です（最大5列まで）", lineNum, cells.length)
+                    );
+                }
+
                 // 1行目で列数を固定（仕様より、データ内の列数は全ての行で同じ想定）
                 if (expectedColumns == -1) {
                     expectedColumns = cells.length;
@@ -133,13 +142,34 @@ public class TSVProcessor {
 
                 // 列数が同じかチェック
                 if (cells.length != expectedColumns) {
-                    throw new IllegalArgumentException("列数不一致: " + lineNum + "行目（期待: " + expectedColumns + "列, 実際: " + cells.length + "列）");
+                    throw new IllegalArgumentException("エラー: 列数不一致 " + lineNum + "行目（期待: " + expectedColumns + "列, 実際: " + cells.length + "列）");
                 }
 
                 // 各セルをコロン区切りで展開し配列に追加
                 List<List<String>> splitCells = new ArrayList<>();
+                int colIndex = 0;
+
                 for (String cell : cells) {
+                    colIndex++;
+
+                    // ▼ 仕様チェック ▼
+                    // セル文字数（0〜10000文字）
+                    if (cell.length() > 10000) {
+                        throw new IllegalArgumentException(
+                            String.format("エラー: セル文字数超過 %d行目 %d列目 のセルが10000文字を超えています（%d文字）",
+                                        lineNum, colIndex, cell.length())
+                        );
+                    }
+
+                    // コロン区切りの値数（最大10個）
                     String[] values = cell.split(":");
+                    if (values.length > 10) {
+                        throw new IllegalArgumentException(
+                            String.format("エラー: 値数超過 %d行目 %d列目 の値が%d個あります（最大10個まで）",
+                                        lineNum, colIndex, values.length)
+                        );
+                    }
+
                     splitCells.add(Arrays.asList(values));
                 }
 
@@ -156,7 +186,9 @@ public class TSVProcessor {
             System.out.println("正規化が完了しました。");
 
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println(e.getMessage());
+            if (outputFile.exists()) outputFile.delete();
+            throw e;
         }
     }
 
@@ -205,7 +237,9 @@ public class TSVProcessor {
      * 正規化されているファイルにて、
      * 同じキーを持つ行をまとめて、値をコロン(:)で連結する
      */
-    public static void processNormalizedFile(String inputPath, String outputPath) {
+    public static void processNormalizedFile(String inputPath, String outputPath) throws Exception  {
+        File outputFile = new File(outputPath);
+
         // 1つのキーに対して複数の値が紐づけられるため、LinkedHashMapを使用（順序を保持）
         Map<String, List<String>> groupedData = new LinkedHashMap<>(); 
 
@@ -219,6 +253,12 @@ public class TSVProcessor {
             // 行ごとに読み込み
             while ((line = reader.readLine()) != null) {
                 lineNum++;
+
+                // 行数チェック
+                if (lineNum > 1000) {
+                    throw new IllegalArgumentException("エラー: 行数が上限（1000行）を超えています。");
+                }
+
                 if (line.trim().isEmpty()) {
                     continue;
                 }
@@ -226,16 +266,29 @@ public class TSVProcessor {
                 // 行をセルごとに分割（タブ区切り）
                 String[] cols = line.split("\t", -1);
 
-                // 列数は2で統一されている前提のため、2以外の場合はエラーとする
+                // 列数チェック
                 if (cols.length != 2) {
-                    throw new IllegalArgumentException("不正な列数: " + lineNum + "行目");
+                    throw new IllegalArgumentException("エラー: 不正な列数: " + lineNum + "行目");
                 }
 
                 String key = cols[0];
                 String value = cols[1];
 
+                // 各セルの文字数チェック（0〜100文字）
+                if (key.length() > 100) {
+                    throw new IllegalArgumentException("エラー: キーが100文字を超えています（行 " + lineNum + "）。");
+                }
+                if (value.length() > 100) {
+                    throw new IllegalArgumentException("エラー: 値が100文字を超えています（行 " + lineNum + "）。");
+                }
+
                 //該当キーが存在しなければリストに追加
                 groupedData.computeIfAbsent(key, k -> new ArrayList<>()).add(value);
+
+                // 追加後に値の個数チェック
+                if (groupedData.get(key).size() > 10) {
+                    throw new IllegalArgumentException("エラー: キー '" + key + "' に紐づく値が10個を超えています。");
+                }
             }
 
             //各キーごとに処理。
@@ -250,7 +303,9 @@ public class TSVProcessor {
             System.out.println("グループ化が完了しました。");
 
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println(e.getMessage());
+            if (outputFile.exists()) outputFile.delete();
+            throw e;
         }
     }
 
