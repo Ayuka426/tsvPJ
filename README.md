@@ -11,3 +11,6 @@
 
 - 逆変換時
 >java TSVProcesser group <ファイル名>
+<br>
+
+サンプルファイルとしてnotNormalize.tsv（正規化されていないファイル）とnormalize.tsv（正規化済みファイル）を追加してあります。
